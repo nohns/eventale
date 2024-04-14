@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package eventale;
+option go_package = "github.com/nohns/eventale/gen/v1/eventalepb";
+
+message SemanticVersion {
+    uint32 major = 1;
+    uint32 minor = 2;
+    uint32 patch = 3;
+}
+
+message WireClientHello {
+    SemanticVersion clientVersion = 1;
+}
+
+message WireServerHello {
+    SemanticVersion serverVersion = 1;
+}
