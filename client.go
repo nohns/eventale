@@ -3,10 +3,13 @@ package eventale
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
+	"os"
 	"time"
 
 	eventalepb "github.com/nohns/eventale/gen/v1"
+	"github.com/nohns/eventale/internal/connection"
 	"github.com/nohns/eventale/internal/transport"
 	"google.golang.org/protobuf/proto"
 )
@@ -47,16 +50,30 @@ func Dial(address string, options ...dialOpt) (*Client, error) {
 		return nil, err
 	}
 
+	c := &connection.Conn{
+		NetConn: conn,
+		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	}
+
 	// Send hello and receive server hello
-	b, err := proto.Marshal(&eventalepb.WireClientHello{})
+	fmt.Print("send client hello\n")
+	frm, err := transport.FromProtoMsg(transport.FrameKindClientHello, &eventalepb.WireClientHello{
+		ClientVersion: &eventalepb.SemanticVersion{
+			Major: 0,
+			Minor: 0,
+			Patch: 1,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-	_, err = conn.Write(b)
-	if err != nil {
+	if err := c.Send(context.Background(), frm); err != nil {
 		return nil, err
 	}
-	frm, err := transport.NewDecoder(conn).Decode(opts.ctx)
+
+	frm, err = transport.NewDecoder(conn).Decode()
 	if err != nil {
 		return nil, fmt.Errorf("client dial: %v", err)
 	}
@@ -67,6 +84,7 @@ func Dial(address string, options ...dialOpt) (*Client, error) {
 	if err := proto.Unmarshal(frm.Payload, &srvhello); err != nil {
 		return nil, fmt.Errorf("client dial: %v", err)
 	}
+	fmt.Printf("recv server hello - %s\n", transport.SemVer(srvhello.ServerVersion))
 
 	return &Client{
 		conn: conn,
