@@ -11,8 +11,11 @@ message SemanticVersion {
 
 message WireClientHello {
     SemanticVersion clientVersion = 1;
+    bytes signature = 2;
 }
 
 message WireServerHello {
     SemanticVersion serverVersion = 1;
+    bytes encryptionKey = 2;
 }
+
