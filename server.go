@@ -2,6 +2,9 @@ package eventale
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +16,9 @@ import (
 
 	eventalepb "github.com/nohns/eventale/gen/v1"
 	"github.com/nohns/eventale/internal/connection"
-	"github.com/nohns/eventale/internal/transport"
+	"github.com/nohns/eventale/internal/frame"
+	"github.com/nohns/eventale/internal/uuid"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -48,11 +53,12 @@ type Server struct {
 	// Logger is the structured logger used when writing to stdout
 	Logger *slog.Logger
 
-	lnr    net.Listener
-	conns  []*connection.Conn
-	state  serverStatus
-	mu     sync.Mutex
-	nextid int
+	lnr        net.Listener
+	conns      []*connection.Conn
+	authedkeys map[[32]byte]rsa.PublicKey
+	state      serverStatus
+	mu         sync.RWMutex
+	nextid     int
 }
 
 func NewServer(addr string) *Server {
@@ -145,34 +151,70 @@ func (s *Server) listenOnConn(conn *connection.Conn) {
 	}
 }
 
-func (s *Server) handleFrame(conn *connection.Conn, frm *transport.Frame) error {
+func (s *Server) handleFrame(conn *connection.Conn, frm *frame.Frame) error {
 	switch frm.Kind {
-	case transport.FrameKindClientHello:
+	case frame.FrameKindClientHello:
 		// Respond with server hello
+		var msg eventalepb.WireClientHello
+		if err := proto.Unmarshal(frm.Payload, &msg); err != nil {
+			return fmt.Errorf("decode client hello: %v", err)
+		}
+
+		// Gen secret symmetric encryption key, and encrypt using the connect
+		// clients associated public key. This way, the client and decrypt it
+		// and also use it when communicating.
+
+		if len(msg.Signature) != 32 {
+			return fmt.Errorf("incorrect key length")
+		}
+		s.mu.RLock()
+		pubkey, ok := s.authedkeys[[32]byte(msg.Signature)]
+		s.mu.RUnlock()
+		if !ok {
+			return fmt.Errorf("unauthorized")
+		}
+		plainkey := make([]byte, 32)
+		n, err := rand.Reader.Read(plainkey)
+		if err != nil {
+			return fmt.Errorf("rand read enc key: %v", err)
+		}
+		if n != len(plainkey) {
+			return fmt.Errorf("could not read enough bytes for enc key")
+		}
+		h := sha256.New()
+		cipherkey, err := rsa.EncryptOAEP(h, rand.Reader, &pubkey, plainkey, nil)
+		if err != nil {
+			return fmt.Errorf("rsa encrypt: %v", err)
+		}
+
 		s.Logger.Info("Client hello - replying with server hello...", slog.Int("connID", conn.ID))
-		frm, err := transport.FromProtoMsg(transport.FrameKindServerHello, &eventalepb.WireServerHello{
+		frm, err := frame.Make(frame.FrameKindServerHello, frame.WithID(uuid.IDer), frame.WithRespondTo(frm.ID), frame.WithProto(&eventalepb.WireServerHello{
 			ServerVersion: &eventalepb.SemanticVersion{
 				Major: 0,
 				Minor: 0,
 				Patch: 1,
 			},
-		})
+			EncryptionKey: cipherkey,
+		}))
 		if err != nil {
-			return fmt.Errorf("from proto msg: %v", err)
+			return fmt.Errorf("frame make: %v", err)
 		}
+
 		if err := conn.Send(context.TODO(), frm); err != nil {
 			return fmt.Errorf("conn send: %v", err)
 		}
 
-	case transport.FrameKindHeartbeat:
+	case frame.FrameKindHeartbeat:
 		// Respond with heartbeat again
-		frm, err := transport.FromProtoMsg(transport.FrameKindHeartbeat, nil)
+		frm, err := frame.Make(frame.FrameKindHeartbeat)
 		if err != nil {
-			return fmt.Errorf("from proto msg: %v", err)
+			return fmt.Errorf("frame make: %v", err)
 		}
 		if err := conn.Send(context.TODO(), frm); err != nil {
 			return fmt.Errorf("conn send: %v", err)
 		}
+	case frame.FrameKindSecretPublish:
+
 	}
 	return nil
 }

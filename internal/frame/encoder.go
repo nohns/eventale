@@ -1,32 +1,54 @@
-package transport
+package frame
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 )
 
-type FrameEncoder struct {
-	w io.Writer
+type encryptor interface {
+	Encrypt(in io.Reader, out io.Writer) (n int, err error)
 }
 
-func NewEncoder(w io.Writer) *FrameEncoder {
-	return &FrameEncoder{w: w}
+type FrameEncoder struct {
+	buf bytes.Buffer
+	w   io.Writer
+	enc encryptor
+}
+
+func NewEncoder(w io.Writer, enc encryptor) *FrameEncoder {
+	return &FrameEncoder{w: w, enc: enc}
 }
 
 func (e *FrameEncoder) Encode(frm *Frame) error {
-	if err := e.writeUInt32(uint32(len(frm.Payload))); err != nil {
+	// Encrypt payload, so payload size is known
+	var payload bytes.Buffer
+	if _, err := e.enc.Encrypt(bytes.NewReader(frm.Payload), &payload); err != nil {
+		return err
+	}
+
+	// Build up buffer for the entire frame
+	if err := e.writeUInt32(uint32(payload.Len())); err != nil {
 		return err
 	}
 	if err := e.writeUInt32(uint32(frm.Kind)); err != nil {
 		return err
 	}
-	return e.write(frm.Payload)
+	if err := e.write(payload.Bytes()); err != nil {
+		return err
+	}
+
+	// Flush entire frame buffer to target
+	if _, err := io.Copy(e.w, &e.buf); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (e *FrameEncoder) write(b []byte) error {
 	var written int
 	for written != len(b) {
-		n, err := e.w.Write(b[written:])
+		n, err := e.buf.Write(b[written:])
 		if err != nil {
 			return err
 		}

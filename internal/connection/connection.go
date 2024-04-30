@@ -2,17 +2,19 @@ package connection
 
 import (
 	"context"
+	"crypto/aes"
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 
-	"github.com/nohns/eventale/internal/transport"
+	"github.com/nohns/eventale/internal/frame"
 )
 
 var ErrConnectionTimeout = errors.New("connection timeout")
 
 type FrameHandler interface {
-	Handle(conn *Conn, frm *transport.Frame) error
+	Handle(conn *Conn, frm *frame.Frame) error
 }
 
 type Conn struct {
@@ -20,11 +22,13 @@ type Conn struct {
 	NetConn net.Conn
 	Logger  *slog.Logger
 
-	dec *transport.FrameDecoder
-	enc *transport.FrameEncoder
+	enckey []byte
+	mu     sync.RWMutex
+	dec    *frame.FrameDecoder
+	enc    *frame.FrameEncoder
 }
 
-func (tc *Conn) Send(ctx context.Context, frm *transport.Frame) error {
+func (tc *Conn) Send(ctx context.Context, frm *frame.Frame) error {
 	// Run in goroutine, so we can return on timeout, or encode result
 	errc := make(chan error)
 	go func() {
@@ -40,9 +44,20 @@ func (tc *Conn) Send(ctx context.Context, frm *transport.Frame) error {
 	}
 }
 
-func (tc *Conn) Recv(ctx context.Context) (*transport.Frame, error) {
+func (tc *Conn) Unary(ctx context.Context, reqfrm *frame.Frame) (resfrm *frame.Frame, err error) {
+	if err := tc.Send(ctx, reqfrm); err != nil {
+		return nil, err
+	}
+	resfrm, err = tc.Recv(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return resfrm, nil
+}
+
+func (tc *Conn) Recv(ctx context.Context) (*frame.Frame, error) {
 	// Run in goroutine, so we can return on timeout, or decode result
-	frmc := make(chan *transport.Frame)
+	frmc := make(chan *frame.Frame)
 	errc := make(chan error)
 	go func() {
 		defer close(frmc)
@@ -65,6 +80,11 @@ func (tc *Conn) Recv(ctx context.Context) (*transport.Frame, error) {
 	}
 }
 
+// Upgrade enabling encryption on communication
+func (tc *Conn) Upgrade(key []byte) {
+	b, err := aes.NewCipher(key)
+}
+
 func (tc *Conn) Close() error {
 	if err := tc.NetConn.Close(); err != nil {
 		return err
@@ -72,16 +92,16 @@ func (tc *Conn) Close() error {
 	return nil
 }
 
-func (tc *Conn) decoder() *transport.FrameDecoder {
+func (tc *Conn) decoder() *frame.FrameDecoder {
 	if tc.dec == nil {
-		tc.dec = transport.NewDecoder(tc.NetConn)
+		tc.dec = frame.NewDecoder(tc.NetConn)
 	}
 	return tc.dec
 }
 
-func (tc *Conn) encoder() *transport.FrameEncoder {
+func (tc *Conn) encoder() *frame.FrameEncoder {
 	if tc.enc == nil {
-		tc.enc = transport.NewEncoder(tc.NetConn)
+		tc.enc = frame.NewEncoder(tc.NetConn)
 	}
 	return tc.enc
 }

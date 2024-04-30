@@ -10,14 +10,15 @@ import (
 
 	eventalepb "github.com/nohns/eventale/gen/v1"
 	"github.com/nohns/eventale/internal/connection"
-	"github.com/nohns/eventale/internal/transport"
+	"github.com/nohns/eventale/internal/frame"
+	"github.com/nohns/eventale/internal/wire"
 	"google.golang.org/protobuf/proto"
 )
 
 var _networkTimeout = 30 * time.Second
 
 type frameDecoder interface {
-	Decode(ctx context.Context) (*transport.Frame, error)
+	Decode(ctx context.Context) (*frame.Frame, error)
 }
 
 type Client struct {
@@ -59,13 +60,13 @@ func Dial(address string, options ...dialOpt) (*Client, error) {
 
 	// Send hello and receive server hello
 	fmt.Print("send client hello\n")
-	frm, err := transport.FromProtoMsg(transport.FrameKindClientHello, &eventalepb.WireClientHello{
+	frm, err := frame.Make(frame.FrameKindClientHello, frame.WithProto(&eventalepb.WireClientHello{
 		ClientVersion: &eventalepb.SemanticVersion{
 			Major: 0,
 			Minor: 0,
 			Patch: 1,
 		},
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -73,18 +74,18 @@ func Dial(address string, options ...dialOpt) (*Client, error) {
 		return nil, err
 	}
 
-	frm, err = transport.NewDecoder(conn).Decode()
+	frm, err = frame.NewDecoder(conn).Decode()
 	if err != nil {
 		return nil, fmt.Errorf("client dial: %v", err)
 	}
-	if frm.Kind != transport.FrameKindServerHello {
+	if frm.Kind != frame.FrameKindServerHello {
 		return nil, fmt.Errorf("unexpected frame kind %d after client hello", frm.Kind)
 	}
 	var srvhello eventalepb.WireServerHello
 	if err := proto.Unmarshal(frm.Payload, &srvhello); err != nil {
 		return nil, fmt.Errorf("client dial: %v", err)
 	}
-	fmt.Printf("recv server hello - %s\n", transport.SemVer(srvhello.ServerVersion))
+	fmt.Printf("recv server hello - %s\n", wire.SemVerStr(srvhello.ServerVersion))
 
 	return &Client{
 		conn: conn,
