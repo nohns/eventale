@@ -7,7 +7,7 @@ you got the entire history of changes to your data, so you don't loose valuable 
 your application changes. And when it changes, you got the possibility of drawing your own read models
 optimized for specific queries, through consuming the events published by Eventale.
 
-**NOTE: in development**
+> **⚠️ NOTE:** Currently in development, so shouldn't really be used for anything as of yet :)
 
 ## Purpose
 
